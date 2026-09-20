@@ -141,6 +141,58 @@ function parseHeadingDirective(node, context) {
   return heading
 }
 
+function markdownImageBlock(node, context) {
+  return {
+    type: 'image',
+    src: resolveContentUrl(node.url, context, node),
+    ...(node.alt ? { alt: node.alt } : {}),
+  }
+}
+
+function imageDirectiveBlock(node, context) {
+  const attributes = node.attributes ?? {}
+  if (!attributes.src) fail(context.filePath, node, 'image directive requires src')
+
+  return {
+    type: 'image',
+    src: resolveContentUrl(attributes.src, context, node),
+    ...(attributes.alt ? { alt: attributes.alt } : {}),
+    ...(attributes.width
+      ? { width: parseOptionalNumber(attributes.width, context.filePath, node, 'width') }
+      : {}),
+  }
+}
+
+function galleryImages(node, context) {
+  const images = []
+
+  for (const child of node.children) {
+    if (child.type === 'leafDirective' && child.name === 'image') {
+      images.push(imageDirectiveBlock(child, context))
+      continue
+    }
+
+    if (child.type === 'paragraph') {
+      for (const inline of child.children) {
+        if (inline.type === 'image') {
+          images.push(markdownImageBlock(inline, context))
+        } else if (inline.type !== 'text' || inline.value.trim()) {
+          fail(context.filePath, inline, 'gallery directive may only contain images')
+        }
+      }
+      continue
+    }
+
+    fail(context.filePath, child, 'gallery directive may only contain images')
+  }
+
+  if (images.length < 2) {
+    fail(context.filePath, node, 'gallery directive must contain at least two images')
+  }
+
+  return images
+}
+
 function blockNodes(nodes, context) {
   const blocks = []
 
@@ -153,12 +205,7 @@ function blockNodes(nodes, context) {
         break
       case 'paragraph': {
         if (node.children.length === 1 && node.children[0].type === 'image') {
-          const image = node.children[0]
-          blocks.push({
-            type: 'image',
-            src: resolveContentUrl(image.url, context, image),
-            ...(image.alt ? { alt: image.alt } : {}),
-          })
+          blocks.push(markdownImageBlock(node.children[0], context))
         } else {
           blocks.push({ type: 'paragraph', children: inlineNodes(node.children, context) })
         }
@@ -203,6 +250,24 @@ function blockNodes(nodes, context) {
         })
         break
       case 'containerDirective': {
+        if (node.name === 'gallery') {
+          const images = galleryImages(node, context)
+
+          const columns = node.attributes?.columns === undefined
+            ? undefined
+            : Number(node.attributes.columns)
+          if (columns !== undefined && ![2, 3, 4].includes(columns)) {
+            fail(context.filePath, node, 'gallery columns must be 2, 3 or 4')
+          }
+
+          blocks.push({
+            type: 'image-group',
+            images,
+            ...(columns ? { columns } : {}),
+          })
+          break
+        }
+
         if (node.name !== 'tip' && node.name !== 'info') {
           fail(context.filePath, node, `unsupported block directive: ${node.name}`)
         }
@@ -222,15 +287,7 @@ function blockNodes(nodes, context) {
           if (!attributes.id) fail(context.filePath, node, 'youtube directive requires id')
           blocks.push({ type: 'youtube', id: attributes.id })
         } else if (node.name === 'image') {
-          if (!attributes.src) fail(context.filePath, node, 'image directive requires src')
-          blocks.push({
-            type: 'image',
-            src: resolveContentUrl(attributes.src, context, node),
-            ...(attributes.alt ? { alt: attributes.alt } : {}),
-            ...(attributes.width
-              ? { width: parseOptionalNumber(attributes.width, context.filePath, node, 'width') }
-              : {}),
-          })
+          blocks.push(imageDirectiveBlock(node, context))
         } else if (node.name === 'heading') {
           blocks.push(parseHeadingDirective(node, context))
         } else {
