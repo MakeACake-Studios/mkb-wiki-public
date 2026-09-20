@@ -16,7 +16,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.MKB_SITE_DISPATCH_TOKEN }}
         run: |
-          test -n "$GH_TOKEN" || { echo "MKB_SITE_DISPATCH_TOKEN is not configured"; exit 1; }
+          if [ -z "$GH_TOKEN" ]; then
+            echo "MKB_SITE_DISPATCH_TOKEN is not configured; skipping the private build trigger"
+            exit 0
+          fi
           curl --fail-with-body \
             --request POST \
             --header "Accept: application/vnd.github+json" \
