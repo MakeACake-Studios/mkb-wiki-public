@@ -12,19 +12,17 @@ on:
 jobs:
   rebuild-site:
     runs-on: ubuntu-latest
+
     steps:
       - name: Trigger private site build
         env:
           GH_TOKEN: ${{ secrets.MKB_SITE_DISPATCH_TOKEN }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
-            echo "MKB_SITE_DISPATCH_TOKEN is not configured; skipping the private build trigger"
-            exit 0
+            echo "::error::MKB_SITE_DISPATCH_TOKEN is not configured"
+            exit 1
           fi
-          curl --fail-with-body \
-            --request POST \
-            --header "Accept: application/vnd.github+json" \
-            --header "Authorization: Bearer $GH_TOKEN" \
-            --header "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/repos/MakeACake-Studios/mkb-site/dispatches \
-            --data '{"event_type":"wiki-content-updated"}'
+
+          gh workflow run build.yml \
+            --repo MakeACake-Studios/mkb-site \
+            --ref main
