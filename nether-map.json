@@ -1,0 +1,15 @@
+{
+  "hubRadius": 50,
+  "branchExtent": 1000,
+  "roofY": 128,
+  "points": [
+    { "id": "hub", "name": "Хаб", "kind": "hub", "x": 0, "y": 128, "z": 0 },
+    { "id": "nalart11-base", "name": "База Nalart11_", "kind": "portal", "x": -158, "y": 128, "z": 90, "branchId": "west" }
+  ],
+  "branches": [
+    { "id": "north", "name": "Северная", "direction": "north", "color": "#3b82f6" },
+    { "id": "east", "name": "Восточная", "direction": "east", "color": "#35bd75" },
+    { "id": "south", "name": "Южная", "direction": "south", "color": "#ef5350" },
+    { "id": "west", "name": "Западная", "direction": "west", "color": "#eabf40" }
+  ]
+}
