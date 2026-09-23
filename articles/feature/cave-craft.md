@@ -1,6 +1,9 @@
 ---
 title: "CaveCraft"
 order: "999"
+banner:
+  src: "../../assets/cavecraft.png"
+
 ---
 
 # CaveCraft
