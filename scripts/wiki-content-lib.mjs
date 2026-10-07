@@ -33,41 +33,7 @@ function parseOptionalNumber(value, filePath, node, field) {
 }
 
 function parseOptionalImageWidth(value, filePath, node) {
-  if (value === undefined) return undefined
-
-  const normalized = String(value).trim()
-  const match = normalized.match(/^(\d+(?:\.\d+)?)(%)?$/)
-
-  if (!match) {
-    fail(
-        filePath,
-        node,
-        'image width must be a positive number or percentage, for example: 600 or 50%',
-    )
-  }
-
-  const number = Number(match[1])
-  const isPercentage = match[2] === '%'
-
-  if (!Number.isFinite(number) || number <= 0) {
-    fail(
-        filePath,
-        node,
-        'image width must be greater than 0',
-    )
-  }
-
-  if (isPercentage && number > 100) {
-    fail(
-        filePath,
-        node,
-        'percentage image width must be greater than 0% and no greater than 100%',
-    )
-  }
-
-  return isPercentage
-      ? `${number}%`
-      : number
+  return parseOptionalNumber(value, filePath, node, 'image width')
 }
 
 function normalizeSlugFromFile(articlesDir, filePath) {
@@ -304,14 +270,14 @@ function parseMarkdownImageWidthSuffix(value, context, node) {
   }
 
   const match = normalized.match(
-      /^\{\s*width\s*=\s*(\d+(?:\.\d+)?%?)\s*\}$/,
+      /^\{\s*width\s*=\s*(\d+(?:\.\d+)?)\s*\}$/,
   )
 
   if (!match) {
     fail(
         context.filePath,
         node,
-        'invalid image attributes; expected {width=600} or {width=50%}',
+        'invalid image attributes; expected {width=600}',
     )
   }
 
