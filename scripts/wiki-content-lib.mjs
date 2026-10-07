@@ -36,27 +36,38 @@ function parseOptionalImageWidth(value, filePath, node) {
   if (value === undefined) return undefined
 
   const normalized = String(value).trim()
-  const match = normalized.match(/^(\d+(?:\.\d+)?)%$/)
+  const match = normalized.match(/^(\d+(?:\.\d+)?)(%)?$/)
 
   if (!match) {
     fail(
         filePath,
         node,
-        'image width must be a percentage, for example: 50%',
+        'image width must be a positive number or percentage, for example: 600 or 50%',
     )
   }
 
   const number = Number(match[1])
+  const isPercentage = match[2] === '%'
 
-  if (!Number.isFinite(number) || number <= 0 || number > 100) {
+  if (!Number.isFinite(number) || number <= 0) {
     fail(
         filePath,
         node,
-        'image width must be greater than 0% and no greater than 100%',
+        'image width must be greater than 0',
     )
   }
 
-  return `${number}%`
+  if (isPercentage && number > 100) {
+    fail(
+        filePath,
+        node,
+        'percentage image width must be greater than 0% and no greater than 100%',
+    )
+  }
+
+  return isPercentage
+      ? `${number}%`
+      : number
 }
 
 function normalizeSlugFromFile(articlesDir, filePath) {
@@ -293,19 +304,19 @@ function parseMarkdownImageWidthSuffix(value, context, node) {
   }
 
   const match = normalized.match(
-      /^\{\s*width\s*=\s*(\d+(?:\.\d+)?)%\s*\}$/,
+      /^\{\s*width\s*=\s*(\d+(?:\.\d+)?%?)\s*\}$/,
   )
 
   if (!match) {
     fail(
         context.filePath,
         node,
-        'invalid image attributes; expected {width=50%}',
+        'invalid image attributes; expected {width=600} or {width=50%}',
     )
   }
 
   return parseOptionalImageWidth(
-      `${match[1]}%`,
+      match[1],
       context.filePath,
       node,
   )
@@ -334,7 +345,10 @@ function markdownImageParagraph(node, context) {
       typeof paragraphEnd !== 'number'
   ) {
     if (node.children.length === 1) {
-      return markdownImageBlock(image, context)
+      return markdownImageBlock(
+          image,
+          context,
+      )
     }
 
     fail(
@@ -348,9 +362,6 @@ function markdownImageParagraph(node, context) {
       .slice(imageEnd, paragraphEnd)
       .trim()
 
-  // Обычная картинка без width:
-  //
-  // ![Картинка](image.webp)
   if (!suffix) {
     return markdownImageBlock(
         image,
@@ -358,24 +369,9 @@ function markdownImageParagraph(node, context) {
     )
   }
 
-  // Картинка с шириной:
-  //
-  // ![Картинка](image.webp){width=50%}
-  const match = suffix.match(
-      /^\{\s*width\s*=\s*(\d+(?:\.\d+)?)%\s*\}$/,
-  )
-
-  if (!match) {
-    fail(
-        context.filePath,
-        node,
-        'invalid image attributes; expected {width=50%}',
-    )
-  }
-
-  const width = parseOptionalImageWidth(
-      `${match[1]}%`,
-      context.filePath,
+  const width = parseMarkdownImageWidthSuffix(
+      suffix,
+      context,
       node,
   )
 
@@ -454,7 +450,7 @@ function galleryImages(node, context) {
                     next,
                 )
 
-            if (parsedWidth !== null) {
+            if (parsedWidth !== undefined) {
               width = parsedWidth
               index++
             }
