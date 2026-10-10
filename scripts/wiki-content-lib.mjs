@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import remarkDirective from 'remark-directive'
 import remarkFrontmatter from 'remark-frontmatter'
 import remarkGfm from 'remark-gfm'
@@ -32,45 +33,187 @@ function parseOptionalNumber(value, filePath, node, field) {
   return number
 }
 
-function parseOptionalImageWidth(value, filePath, node) {
+/**
+ * Parses image width.
+ *
+ * Supported formats:
+ *
+ * 400  -> number 400 -> rendered as 400px
+ * 50%  -> string "50%" -> rendered as 50%
+ */
+function parseImageWidth(value, filePath, node) {
   if (value === undefined) return undefined
 
   const normalized = String(value).trim()
-  const match = normalized.match(/^(\d+(?:\.\d+)?)%$/)
+
+  const match = normalized.match(
+      /^(\d+(?:\.\d+)?)(%)?$/,
+  )
 
   if (!match) {
     fail(
         filePath,
         node,
-        'image width must be a percentage, for example: 50%',
+        'image width must be a positive number or percentage, for example: 400 or 50%',
     )
   }
 
-  const number = Number(match[1])
+  const width = Number(match[1])
+  const isPercentage = match[2] === '%'
 
-  if (!Number.isFinite(number) || number <= 0 || number > 100) {
+  if (!Number.isFinite(width) || width <= 0) {
     fail(
         filePath,
         node,
-        'image width must be greater than 0% and no greater than 100%',
+        'image width must be greater than 0',
     )
   }
 
-  return `${number}%`
+  if (isPercentage && width > 100) {
+    fail(
+        filePath,
+        node,
+        'image width percentage must be no greater than 100%',
+    )
+  }
+
+  return isPercentage
+      ? `${width}%`
+      : width
+}
+
+/**
+ * Parses an attribute suffix after a regular Markdown image.
+ *
+ * Supported:
+ *
+ * ![Image](image.png){width=400}
+ * ![Image](image.png){width=50%}
+ */
+function parseImageWidthSuffix(value, filePath, node) {
+  const normalized = value.trim()
+
+  const match = normalized.match(
+      /^\{\s*width\s*=\s*(\d+(?:\.\d+)?%?)\s*\}$/,
+  )
+
+  if (!match) {
+    fail(
+        filePath,
+        node,
+        'invalid image attributes; expected {width=400} or {width=50%}',
+    )
+  }
+
+  return parseImageWidth(
+      match[1],
+      filePath,
+      node,
+  )
 }
 
 function normalizeSlugFromFile(articlesDir, filePath) {
-  const relative = path.relative(articlesDir, filePath).replaceAll(path.sep, '/')
-  const withoutExtension = relative.replace(/\.md$/i, '')
+  const relative = path
+      .relative(articlesDir, filePath)
+      .replaceAll(path.sep, '/')
+
+  const withoutExtension = relative.replace(
+      /\.md$/i,
+      '',
+  )
 
   return withoutExtension.endsWith('/index')
-      ? withoutExtension.slice(0, -'/index'.length)
+      ? withoutExtension.slice(
+          0,
+          -'/index'.length,
+      )
       : withoutExtension
+}
+
+function githubUsername(authorName, authorEmail) {
+  const noReplyMatch = authorEmail.match(
+      /^(?:\d+\+)?([^@]+)@users\.noreply\.github\.com$/i,
+  )
+
+  if (noReplyMatch) {
+    return noReplyMatch[1]
+  }
+
+  const trimmedName = authorName.trim()
+
+  return /^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i.test(
+      trimmedName,
+  )
+      ? trimmedName
+      : undefined
+}
+
+function lastModification(contentDir, filePath) {
+  try {
+    const output = execFileSync(
+        'git',
+        [
+          'log',
+          '-1',
+          '--format=%cI%x00%an%x00%ae',
+          '--',
+          path.relative(
+              contentDir,
+              filePath,
+          ),
+        ],
+        {
+          cwd: contentDir,
+          encoding: 'utf8',
+          stdio: [
+            'ignore',
+            'pipe',
+            'ignore',
+          ],
+        },
+    ).trim()
+
+    const [
+      modifiedAt,
+      authorName = '',
+      authorEmail = '',
+    ] = output.split('\0')
+
+    if (modifiedAt) {
+      const modifiedBy = githubUsername(
+          authorName,
+          authorEmail,
+      )
+
+      return {
+        modifiedAt,
+        ...(modifiedBy
+            ? {
+              modifiedBy,
+            }
+            : {}),
+      }
+    }
+  } catch {
+    // Fall back to the file timestamp when
+    // the content is not inside a Git repository.
+  }
+
+  return {
+    modifiedAt: fs
+        .statSync(filePath)
+        .mtime
+        .toISOString(),
+  }
 }
 
 function resolveContentUrl(url, context, node) {
   if (!url) {
-    fail(context.filePath, node, 'empty URL')
+    fail(
+        context.filePath,
+        node,
+        'empty URL',
+    )
   }
 
   if (/^[a-z][a-z\d+.-]*:/i.test(url)) {
@@ -79,10 +222,18 @@ function resolveContentUrl(url, context, node) {
     try {
       parsed = new URL(url)
     } catch {
-      fail(context.filePath, node, `invalid URL: ${url}`)
+      fail(
+          context.filePath,
+          node,
+          `invalid URL: ${url}`,
+      )
     }
 
-    if (!SAFE_REMOTE_PROTOCOLS.has(parsed.protocol)) {
+    if (
+        !SAFE_REMOTE_PROTOCOLS.has(
+            parsed.protocol,
+        )
+    ) {
       fail(
           context.filePath,
           node,
@@ -97,11 +248,28 @@ function resolveContentUrl(url, context, node) {
     return url
   }
 
-  const [pathname, suffix = ''] = url.split(/(?=[?#])/u, 2)
-  const absolutePath = path.resolve(path.dirname(context.filePath), pathname)
-  const relativePath = path.relative(context.contentDir, absolutePath)
+  const [
+    pathname,
+    suffix = '',
+  ] = url.split(
+      /(?=[?#])/u,
+      2,
+  )
 
-  if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+  const absolutePath = path.resolve(
+      path.dirname(context.filePath),
+      pathname,
+  )
+
+  const relativePath = path.relative(
+      context.contentDir,
+      absolutePath,
+  )
+
+  if (
+      relativePath.startsWith('..') ||
+      path.isAbsolute(relativePath)
+  ) {
     fail(
         context.filePath,
         node,
@@ -117,14 +285,26 @@ function resolveContentUrl(url, context, node) {
     )
   }
 
-  return `/wiki-content/${relativePath.replaceAll(path.sep, '/')}${suffix}`
+  return `/wiki-content/${relativePath.replaceAll(
+      path.sep,
+      '/',
+  )}${suffix}`
 }
 
 function internalSlug(url) {
   const clean = url
-      .replace(/^\/wiki\//, '/')
-      .replace(/^\//, '')
-      .replace(/\/$/, '')
+      .replace(
+          /^\/wiki\//,
+          '/',
+      )
+      .replace(
+          /^\//,
+          '',
+      )
+      .replace(
+          /\/$/,
+          '',
+      )
 
   return clean || undefined
 }
@@ -133,13 +313,18 @@ function inlineNodes(nodes, context) {
   return nodes.flatMap((node) => {
     switch (node.type) {
       case 'text':
-        return [node.value]
+        return [
+          node.value,
+        ]
 
       case 'strong':
         return [
           {
             type: 'strong',
-            children: inlineNodes(node.children, context),
+            children: inlineNodes(
+                node.children,
+                context,
+            ),
           },
         ]
 
@@ -147,7 +332,10 @@ function inlineNodes(nodes, context) {
         return [
           {
             type: 'em',
-            children: inlineNodes(node.children, context),
+            children: inlineNodes(
+                node.children,
+                context,
+            ),
           },
         ]
 
@@ -155,7 +343,10 @@ function inlineNodes(nodes, context) {
         return [
           {
             type: 'strike',
-            children: inlineNodes(node.children, context),
+            children: inlineNodes(
+                node.children,
+                context,
+            ),
           },
         ]
 
@@ -168,17 +359,27 @@ function inlineNodes(nodes, context) {
         ]
 
       case 'break':
-        return ['\n']
+        return [
+          '\n',
+        ]
 
       case 'link': {
-        const children = inlineNodes(node.children, context)
+        const children = inlineNodes(
+            node.children,
+            context,
+        )
 
-        if (node.url.startsWith('/') && !node.url.startsWith('//')) {
+        if (
+            node.url.startsWith('/') &&
+            !node.url.startsWith('//')
+        ) {
           return [
             {
               type: 'link',
               children,
-              slug: internalSlug(node.url),
+              slug: internalSlug(
+                  node.url,
+              ),
             },
           ]
         }
@@ -187,13 +388,20 @@ function inlineNodes(nodes, context) {
           {
             type: 'link',
             children,
-            href: resolveContentUrl(node.url, context, node),
+            href: resolveContentUrl(
+                node.url,
+                context,
+                node,
+            ),
           },
         ]
       }
 
       case 'textDirective': {
-        if (node.name !== 'underline' && node.name !== 'spoiler') {
+        if (
+            node.name !== 'underline' &&
+            node.name !== 'spoiler'
+        ) {
           fail(
               context.filePath,
               node,
@@ -204,7 +412,10 @@ function inlineNodes(nodes, context) {
         return [
           {
             type: node.name,
-            children: inlineNodes(node.children, context),
+            children: inlineNodes(
+                node.children,
+                context,
+            ),
           },
         ]
       }
@@ -220,10 +431,20 @@ function inlineNodes(nodes, context) {
 }
 
 function parseHeadingDirective(node, context) {
-  const attributes = node.attributes ?? {}
-  const level = Number(attributes.level ?? 2)
+  const attributes =
+      node.attributes ?? {}
 
-  if (![1, 2, 3].includes(level)) {
+  const level = Number(
+      attributes.level ?? 2,
+  )
+
+  if (
+      ![
+        1,
+        2,
+        3,
+      ].includes(level)
+  ) {
     fail(
         context.filePath,
         node,
@@ -239,12 +460,18 @@ function parseHeadingDirective(node, context) {
 
   if (attributes.icon) {
     heading.icon = {
-      src: resolveContentUrl(attributes.icon, context, node),
+      src: resolveContentUrl(
+          attributes.icon,
+          context,
+          node,
+      ),
+
       ...(attributes.iconAlt
           ? {
             alt: attributes.iconAlt,
           }
           : {}),
+
       ...(attributes.iconWidth
           ? {
             width: parseOptionalNumber(
@@ -258,8 +485,14 @@ function parseHeadingDirective(node, context) {
     }
   }
 
-  if (attributes.gradientFrom || attributes.gradientTo) {
-    if (!attributes.gradientFrom || !attributes.gradientTo) {
+  if (
+      attributes.gradientFrom ||
+      attributes.gradientTo
+  ) {
+    if (
+        !attributes.gradientFrom ||
+        !attributes.gradientTo
+    ) {
       fail(
           context.filePath,
           node,
@@ -276,236 +509,130 @@ function parseHeadingDirective(node, context) {
   return heading
 }
 
-function markdownImageBlock(node, context, width) {
-  return {
-    type: 'image',
-    src: resolveContentUrl(node.url, context, node),
-    ...(node.alt ? { alt: node.alt } : {}),
-    ...(width !== undefined ? { width } : {}),
-  }
-}
-
-function parseMarkdownImageWidthSuffix(value, context, node) {
-  const normalized = value.trim()
-
-  if (!normalized) {
-    return undefined
-  }
-
-  const match = normalized.match(
-      /^\{\s*width\s*=\s*(\d+(?:\.\d+)?)%\s*\}$/,
-  )
-
-  if (!match) {
-    fail(
-        context.filePath,
-        node,
-        'invalid image attributes; expected {width=50%}',
-    )
-  }
-
-  return parseOptionalImageWidth(
-      `${match[1]}%`,
-      context.filePath,
-      node,
-  )
-}
-
-function markdownImageParagraph(node, context) {
-  if (node.type !== 'paragraph') {
-    return undefined
-  }
-
-  if (!node.children?.length) {
-    return undefined
-  }
-
-  const image = node.children[0]
-
-  if (image.type !== 'image') {
-    return undefined
-  }
-
-  const imageEnd = image.position?.end?.offset
-  const paragraphEnd = node.position?.end?.offset
-
-  if (
-      typeof imageEnd !== 'number' ||
-      typeof paragraphEnd !== 'number'
-  ) {
-    if (node.children.length === 1) {
-      return markdownImageBlock(image, context)
-    }
-
-    fail(
-        context.filePath,
-        node,
-        'could not determine image attribute position',
-    )
-  }
-
-  const suffix = context.source
-      .slice(imageEnd, paragraphEnd)
-      .trim()
-
-  // Обычная картинка без width:
-  //
-  // ![Картинка](image.webp)
-  if (!suffix) {
-    return markdownImageBlock(
-        image,
-        context,
-    )
-  }
-
-  // Картинка с шириной:
-  //
-  // ![Картинка](image.webp){width=50%}
-  const match = suffix.match(
-      /^\{\s*width\s*=\s*(\d+(?:\.\d+)?)%\s*\}$/,
-  )
-
-  if (!match) {
-    fail(
-        context.filePath,
-        node,
-        'invalid image attributes; expected {width=50%}',
-    )
-  }
-
-  const width = parseOptionalImageWidth(
-      `${match[1]}%`,
-      context.filePath,
-      node,
-  )
-
-  return markdownImageBlock(
-      image,
-      context,
-      width,
-  )
-}
-
-function imageDirectiveBlock(node, context) {
-  const attributes = node.attributes ?? {}
-
-  if (!attributes.src) {
-    fail(
-        context.filePath,
-        node,
-        'image directive requires src',
-    )
-  }
-
-  return {
-    type: 'image',
-    src: resolveContentUrl(
-        attributes.src,
-        context,
-        node,
-    ),
-    ...(attributes.alt
-        ? {
-          alt: attributes.alt,
-        }
-        : {}),
-    ...(attributes.width !== undefined
-        ? {
-          width: parseOptionalImageWidth(
-              attributes.width,
-              context.filePath,
-              node,
-          ),
-        }
-        : {}),
-  }
-}
-
-function galleryImages(node, context) {
+/**
+ * Gallery deliberately contains only normal Markdown images.
+ *
+ * Width is not supported inside gallery because WikiGalleryImage
+ * currently contains only:
+ *
+ * src
+ * alt
+ * position
+ *
+ * and WikiGallery does not pass width to WikiImage.
+ */
+function parseGalleryDirective(node, context) {
   const images = []
 
-  for (const child of node.children) {
+  for (
+      const child
+      of node.children ?? []
+      ) {
     if (
-        child.type === 'leafDirective' &&
-        child.name === 'image'
+        child.type !== 'paragraph' ||
+        child.children.length !== 1 ||
+        child.children[0].type !== 'image'
     ) {
-      images.push(
-          imageDirectiveBlock(child, context),
+      fail(
+          context.filePath,
+          child,
+          'gallery directive may contain only Markdown images',
       )
-
-      continue
     }
 
-    if (child.type === 'paragraph') {
-      let index = 0
+    const image =
+        child.children[0]
 
-      while (index < child.children.length) {
-        const inline = child.children[index]
+    images.push({
+      src: resolveContentUrl(
+          image.url,
+          context,
+          image,
+      ),
 
-        if (inline.type === 'image') {
-          let width
-          const next = child.children[index + 1]
-
-          if (next?.type === 'text') {
-            const parsedWidth =
-                parseMarkdownImageWidthSuffix(
-                    next.value,
-                    context,
-                    next,
-                )
-
-            if (parsedWidth !== null) {
-              width = parsedWidth
-              index++
-            }
+      ...(image.alt
+          ? {
+            alt: image.alt,
           }
-
-          images.push(
-              markdownImageBlock(
-                  inline,
-                  context,
-                  width,
-              ),
-          )
-
-          index++
-          continue
-        }
-
-        if (
-            inline.type === 'text' &&
-            !inline.value.trim()
-        ) {
-          index++
-          continue
-        }
-
-        fail(
-            context.filePath,
-            inline,
-            'gallery directive may only contain images',
-        )
-      }
-
-      continue
-    }
-
-    fail(
-        context.filePath,
-        child,
-        'gallery directive may only contain images',
-    )
+          : {}),
+    })
   }
 
-  if (images.length < 2) {
+  if (
+      images.length === 0
+  ) {
     fail(
         context.filePath,
         node,
-        'gallery directive must contain at least two images',
+        'gallery directive requires at least one image',
     )
   }
 
-  return images
+  return {
+    type: 'gallery',
+    images,
+  }
+}
+
+function parseMarkdownImageParagraph(
+    node,
+    context,
+) {
+  const image =
+      node.children[0]
+
+  if (
+      image?.type !== 'image'
+  ) {
+    return undefined
+  }
+
+  if (
+      node.children.length === 1
+  ) {
+    return {
+      type: 'image',
+
+      src: resolveContentUrl(
+          image.url,
+          context,
+          image,
+      ),
+
+      ...(image.alt
+          ? {
+            alt: image.alt,
+          }
+          : {}),
+    }
+  }
+
+  const suffix = node.children
+      .slice(1)
+      .map(textContent)
+      .join('')
+
+  return {
+    type: 'image',
+
+    src: resolveContentUrl(
+        image.url,
+        context,
+        image,
+    ),
+
+    ...(image.alt
+        ? {
+          alt: image.alt,
+        }
+        : {}),
+
+    width: parseImageWidthSuffix(
+        suffix,
+        context.filePath,
+        node,
+    ),
+  }
 }
 
 function blockNodes(nodes, context) {
@@ -516,37 +643,30 @@ function blockNodes(nodes, context) {
       case 'yaml':
         break
 
-        /*
-         * Markdown comments in the form:
-         *
-         * [//]&#58; # (comment)
-         *
-         * are parsed by remark as definitions.
-         *
-         * We do not render them.
-         */
-      case 'definition':
-        break
-
       case 'heading':
         blocks.push({
           type: 'heading',
           level: node.depth,
-          text: textContent(node).trim(),
+          text: textContent(
+              node,
+          ).trim(),
         })
+
         break
 
       case 'paragraph': {
-        const image = markdownImageParagraph(
-            node,
-            context,
-        )
+        const image =
+            parseMarkdownImageParagraph(
+                node,
+                context,
+            )
 
         if (image) {
           blocks.push(image)
         } else {
           blocks.push({
             type: 'paragraph',
+
             children: inlineNodes(
                 node.children,
                 context,
@@ -558,27 +678,33 @@ function blockNodes(nodes, context) {
       }
 
       case 'list': {
-        const items = node.children.map((item) => {
-          if (
-              item.children.length !== 1 ||
-              item.children[0].type !== 'paragraph'
-          ) {
-            fail(
-                context.filePath,
-                item,
-                'list items must contain one paragraph',
-            )
-          }
+        const items =
+            node.children.map(
+                (item) => {
+                  if (
+                      item.children.length !== 1 ||
+                      item.children[0].type !==
+                      'paragraph'
+                  ) {
+                    fail(
+                        context.filePath,
+                        item,
+                        'list items must contain one paragraph',
+                    )
+                  }
 
-          return inlineNodes(
-              item.children[0].children,
-              context,
-          )
-        })
+                  return inlineNodes(
+                      item.children[0].children,
+                      context,
+                  )
+                },
+            )
 
         blocks.push({
           type: 'list',
-          ordered: Boolean(node.ordered),
+          ordered: Boolean(
+              node.ordered,
+          ),
           items,
         })
 
@@ -588,41 +714,53 @@ function blockNodes(nodes, context) {
       case 'blockquote':
         blocks.push({
           type: 'quote',
+
           blocks: blockNodes(
               node.children,
               context,
           ),
         })
+
         break
 
       case 'thematicBreak':
         blocks.push({
           type: 'hr',
         })
+
         break
 
       case 'table': {
-        const rows = node.children.map((row) =>
-            row.children.map((cell) =>
-                inlineNodes(
-                    cell.children,
-                    context,
-                ),
-            ),
-        )
+        const rows =
+            node.children.map(
+                (row) =>
+                    row.children.map(
+                        (cell) =>
+                            inlineNodes(
+                                cell.children,
+                                context,
+                            ),
+                    ),
+            )
 
-        const headers = rows.shift() ?? []
+        const headers =
+            rows.shift() ?? []
 
         blocks.push({
           type: 'table',
           headers,
           rows,
-          ...(node.align?.some(Boolean)
+
+          ...(node.align?.some(
+              Boolean,
+          )
               ? {
-                align: node.align.map(
-                    (alignment) =>
-                        alignment ?? 'left',
-                ),
+                align:
+                    node.align.map(
+                        (alignment) =>
+                            alignment ??
+                            'left',
+                    ),
               }
               : {}),
         })
@@ -634,83 +772,65 @@ function blockNodes(nodes, context) {
         blocks.push({
           type: 'code',
           code: node.value,
+
           ...(node.lang
               ? {
-                language: node.lang,
+                language:
+                node.lang,
               }
               : {}),
         })
+
         break
 
       case 'containerDirective': {
-        if (node.name === 'gallery') {
-          const images = galleryImages(
-              node,
-              context,
+        if (
+            node.name === 'gallery'
+        ) {
+          blocks.push(
+              parseGalleryDirective(
+                  node,
+                  context,
+              ),
           )
-
-          const columns =
-              node.attributes?.columns === undefined
-                  ? undefined
-                  : Number(
-                      node.attributes.columns,
-                  )
-
-          if (
-              columns !== undefined &&
-              ![2, 3, 4].includes(columns)
-          ) {
-            fail(
-                context.filePath,
-                node,
-                'gallery columns must be 2, 3 or 4',
-            )
-          }
-
-          blocks.push({
-            type: 'image-group',
-            images,
-            ...(columns
-                ? {
-                  columns,
-                }
-                : {}),
-          })
 
           break
         }
 
         if (
-            node.name !== 'tip' &&
-            node.name !== 'info'
+            node.name === 'tip' ||
+            node.name === 'info'
         ) {
-          fail(
-              context.filePath,
-              node,
-              `unsupported block directive: ${node.name}`,
-          )
+          const title =
+              node.attributes?.title
+
+          if (!title) {
+            fail(
+                context.filePath,
+                node,
+                `${node.name} directive requires a title`,
+            )
+          }
+
+          blocks.push({
+            type: 'callout',
+            variant: node.name,
+            title,
+
+            blocks: blockNodes(
+                node.children,
+                context,
+            ),
+          })
+
+          break
         }
 
-        const title =
-            node.attributes?.title
-
-        if (!title) {
-          fail(
-              context.filePath,
-              node,
-              `${node.name} directive requires a title`,
-          )
-        }
-
-        blocks.push({
-          type: 'callout',
-          variant: node.name,
-          title,
-          blocks: blockNodes(
-              node.children,
-              context,
-          ),
-        })
+        fail(
+            context.filePath,
+            node,
+            `unsupported block directive: ${node.name}`,
+        )
 
         break
       }
@@ -719,7 +839,9 @@ function blockNodes(nodes, context) {
         const attributes =
             node.attributes ?? {}
 
-        if (node.name === 'youtube') {
+        if (
+            node.name === 'youtube'
+        ) {
           if (!attributes.id) {
             fail(
                 context.filePath,
@@ -735,12 +857,42 @@ function blockNodes(nodes, context) {
         } else if (
             node.name === 'image'
         ) {
-          blocks.push(
-              imageDirectiveBlock(
-                  node,
-                  context,
-              ),
-          )
+          if (!attributes.src) {
+            fail(
+                context.filePath,
+                node,
+                'image directive requires src',
+            )
+          }
+
+          blocks.push({
+            type: 'image',
+
+            src: resolveContentUrl(
+                attributes.src,
+                context,
+                node,
+            ),
+
+            ...(attributes.alt
+                ? {
+                  alt:
+                  attributes.alt,
+                }
+                : {}),
+
+            ...(attributes.width !==
+            undefined
+                ? {
+                  width:
+                      parseImageWidth(
+                          attributes.width,
+                          context.filePath,
+                          node,
+                      ),
+                }
+                : {}),
+          })
         } else if (
             node.name === 'heading'
         ) {
@@ -767,6 +919,7 @@ function blockNodes(nodes, context) {
             node,
             'raw HTML is not allowed',
         )
+
         break
 
       default:
@@ -789,62 +942,96 @@ function markdownFiles(directory) {
             withFileTypes: true,
           },
       )
-      .flatMap((entry) => {
-        const entryPath = path.join(
-            directory,
-            entry.name,
-        )
+      .flatMap(
+          (entry) => {
+            const entryPath =
+                path.join(
+                    directory,
+                    entry.name,
+                )
 
-        if (entry.isDirectory()) {
-          return markdownFiles(entryPath)
-        }
+            if (
+                entry.isDirectory()
+            ) {
+              return markdownFiles(
+                  entryPath,
+              )
+            }
 
-        return entry.isFile() &&
-        entry.name.endsWith('.md')
-            ? [entryPath]
-            : []
-      })
+            return (
+                entry.isFile() &&
+                entry.name.endsWith(
+                    '.md',
+                )
+            )
+                ? [
+                  entryPath,
+                ]
+                : []
+          },
+      )
 }
 
-export function loadWikiContent(contentDir) {
+export function loadWikiContent(
+    contentDir,
+) {
   const resolvedContentDir =
       path.resolve(contentDir)
 
-  const articlesDir = path.join(
-      resolvedContentDir,
-      'articles',
-  )
+  const articlesDir =
+      path.join(
+          resolvedContentDir,
+          'articles',
+      )
 
-  if (!fs.existsSync(articlesDir)) {
+  if (
+      !fs.existsSync(
+          articlesDir,
+      )
+  ) {
     throw new Error(
         `Wiki articles directory does not exist: ${articlesDir}`,
     )
   }
 
-  const processor = unified()
-      .use(remarkParse)
-      .use(
-          remarkFrontmatter,
-          ['yaml'],
-      )
-      .use(remarkGfm)
-      .use(remarkDirective)
+  const processor =
+      unified()
+          .use(remarkParse)
+          .use(
+              remarkFrontmatter,
+              [
+                'yaml',
+              ],
+          )
+          .use(remarkGfm)
+          .use(remarkDirective)
 
   const articles =
-      markdownFiles(articlesDir).map(
+      markdownFiles(
+          articlesDir,
+      ).map(
           (filePath) => {
-            const source = fs.readFileSync(
-                filePath,
-                'utf8',
-            )
+            const source =
+                fs.readFileSync(
+                    filePath,
+                    'utf8',
+                )
 
-            const tree = processor.parse(source)
+            const tree =
+                processor.parse(
+                    source,
+                )
 
-            const frontmatterNode = tree.children.find(
-                (node) => node.type === 'yaml',
-            )
+            const frontmatterNode =
+                tree.children.find(
+                    (node) =>
+                        node.type ===
+                        'yaml',
+                )
 
-            if (!frontmatterNode) {
+            if (
+                !frontmatterNode
+            ) {
               fail(
                   filePath,
                   tree,
@@ -853,12 +1040,15 @@ export function loadWikiContent(contentDir) {
             }
 
             const metadata =
-                YAML.parse(frontmatterNode.value) ?? {}
+                YAML.parse(
+                    frontmatterNode.value,
+                ) ?? {}
 
-            const slug = normalizeSlugFromFile(
-                articlesDir,
-                filePath,
-            )
+            const slug =
+                normalizeSlugFromFile(
+                    articlesDir,
+                    filePath,
+                )
 
             if (!slug) {
               fail(
@@ -869,7 +1059,8 @@ export function loadWikiContent(contentDir) {
             }
 
             if (
-                typeof metadata.title !== 'string' ||
+                typeof metadata.title !==
+                'string' ||
                 !metadata.title.trim()
             ) {
               fail(
@@ -880,41 +1071,121 @@ export function loadWikiContent(contentDir) {
             }
 
             const context = {
-              contentDir: resolvedContentDir,
+              contentDir:
+              resolvedContentDir,
               filePath,
-              source,
             }
+
+            const {
+              modifiedAt,
+              modifiedBy,
+            } =
+                lastModification(
+                    resolvedContentDir,
+                    filePath,
+                )
 
             const article = {
               slug,
-              title: metadata.title.trim(),
-              order: Number.isFinite(
-                  Number(metadata.order),
-              )
-                  ? Number(metadata.order)
-                  : 999,
-              blocks: blockNodes(
-                  tree.children,
-                  context,
-              ),
+
+              title:
+                  metadata.title.trim(),
+
+              order:
+                  Number.isFinite(
+                      Number(
+                          metadata.order,
+                      ),
+                  )
+                      ? Number(
+                          metadata.order,
+                      )
+                      : 999,
+
+              lastModifiedAt:
+              modifiedAt,
+
+              ...(modifiedBy
+                  ? {
+                    lastModifiedBy:
+                    modifiedBy,
+                  }
+                  : {}),
+
+              blocks:
+                  blockNodes(
+                      tree.children,
+                      context,
+                  ),
+            }
+
+            if (
+                metadata.banner
+            ) {
+              if (
+                  typeof metadata.banner !==
+                  'object' ||
+                  typeof metadata.banner.src !==
+                  'string'
+              ) {
+                fail(
+                    filePath,
+                    frontmatterNode,
+                    'banner.src is required',
+                )
+              }
+
+              article.banner = {
+                src:
+                    resolveContentUrl(
+                        metadata.banner.src,
+                        context,
+                        frontmatterNode,
+                    ),
+
+                ...(metadata.banner.alt
+                    ? {
+                      alt: String(
+                          metadata.banner.alt,
+                      ),
+                    }
+                    : {}),
+
+                ...(metadata.banner.position
+                    ? {
+                      position:
+                          String(
+                              metadata.banner.position,
+                          ),
+                    }
+                    : {}),
+              }
             }
 
             return article
           },
       )
 
-  const seenSlugs = new Set()
+  const seenSlugs =
+      new Set()
 
-  for (const article of articles) {
+  for (
+      const article
+      of articles
+      ) {
     if (
-        seenSlugs.has(article.slug)
+        seenSlugs.has(
+            article.slug,
+        )
     ) {
       throw new Error(
           `Duplicate wiki slug: ${article.slug}`,
       )
     }
 
-    seenSlugs.add(article.slug)
+    seenSlugs.add(
+        article.slug,
+    )
   }
 
   const brokenLinks = []
@@ -923,22 +1194,33 @@ export function loadWikiContent(contentDir) {
       nodes,
       article,
   ) => {
-    for (const node of nodes) {
-      if (typeof node === 'string') {
+    for (
+        const node
+        of nodes
+        ) {
+      if (
+          typeof node ===
+          'string'
+      ) {
         continue
       }
 
       if (
-          node.type === 'link' &&
+          node.type ===
+          'link' &&
           node.slug &&
-          !seenSlugs.has(node.slug)
+          !seenSlugs.has(
+              node.slug,
+          )
       ) {
         brokenLinks.push(
             `${article.slug} -> ${node.slug}`,
         )
       }
 
-      if ('children' in node) {
+      if (
+          'children' in node
+      ) {
         visitInline(
             node.children,
             article,
@@ -951,9 +1233,13 @@ export function loadWikiContent(contentDir) {
       blocks,
       article,
   ) => {
-    for (const block of blocks) {
+    for (
+        const block
+        of blocks
+        ) {
       if (
-          block.type === 'paragraph'
+          block.type ===
+          'paragraph'
       ) {
         visitInline(
             block.children,
@@ -961,7 +1247,10 @@ export function loadWikiContent(contentDir) {
         )
       }
 
-      if (block.type === 'list') {
+      if (
+          block.type ===
+          'list'
+      ) {
         block.items.forEach(
             (item) =>
                 visitInline(
@@ -971,7 +1260,10 @@ export function loadWikiContent(contentDir) {
         )
       }
 
-      if (block.type === 'table') {
+      if (
+          block.type ===
+          'table'
+      ) {
         block.headers.forEach(
             (cell) =>
                 visitInline(
@@ -982,17 +1274,20 @@ export function loadWikiContent(contentDir) {
 
         block.rows
             .flat()
-            .forEach((cell) =>
-                visitInline(
-                    cell,
-                    article,
-                ),
+            .forEach(
+                (cell) =>
+                    visitInline(
+                        cell,
+                        article,
+                    ),
             )
       }
 
       if (
-          block.type === 'quote' ||
-          block.type === 'callout'
+          block.type ===
+          'quote' ||
+          block.type ===
+          'callout'
       ) {
         visitBlocks(
             block.blocks,
@@ -1002,14 +1297,17 @@ export function loadWikiContent(contentDir) {
     }
   }
 
-  articles.forEach((article) =>
-      visitBlocks(
-          article.blocks,
-          article,
-      ),
+  articles.forEach(
+      (article) =>
+          visitBlocks(
+              article.blocks,
+              article,
+          ),
   )
 
-  if (brokenLinks.length) {
+  if (
+      brokenLinks.length
+  ) {
     throw new Error(
         `Broken internal wiki links:\n${brokenLinks.join('\n')}`,
     )
@@ -1017,7 +1315,8 @@ export function loadWikiContent(contentDir) {
 
   return articles.sort(
       (a, b) =>
-          a.order - b.order ||
+          a.order -
+          b.order ||
           a.slug.localeCompare(
               b.slug,
               'ru',

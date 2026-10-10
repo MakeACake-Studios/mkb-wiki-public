@@ -1,22 +1,91 @@
-name: Validate wiki content
+name: Validate and Publish wiki
 
 on:
   pull_request:
+    paths:
+      - 'articles/**'
+      - 'assets/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'package-lock.json'
+
   push:
     branches:
       - main
+    paths:
+      - 'articles/**'
+      - 'assets/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'package-lock.json'
+
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   validate:
+    name: Validate wiki content
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout wiki
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: '24'
           cache: npm
-      - run: npm ci
-      - run: npm test
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate wiki content
+        run: npm test
+
+  publish:
+    name: Trigger site build
+
+    needs:
+      - validate
+
+    if: >
+      github.ref == 'refs/heads/main' &&
+      (
+        github.event_name == 'push' ||
+        github.event_name == 'workflow_dispatch'
+      )
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger private site build
+        env:
+          GH_TOKEN: ${{ secrets.MKB_SITE_DISPATCH_TOKEN }}
+          WIKI_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::error::MKB_SITE_DISPATCH_TOKEN is not configured"
+            exit 1
+          fi
+
+          if [[ -z "${WIKI_SHA:-}" ]]; then
+            echo "::error::Wiki commit SHA is empty"
+            exit 1
+          fi
+
+          echo "Wiki validation succeeded."
+          echo "Wiki commit: $WIKI_SHA"
+          echo "Triggering mkb-site build..."
+
+          gh api \
+            --method POST \
+            "repos/MakeACake-Studios/mkb-site/dispatches" \
+            -f "event_type=wiki-content-updated" \
+            -f "client_payload[wiki_sha]=$WIKI_SHA"
+
+          echo "mkb-site build triggered successfully."
