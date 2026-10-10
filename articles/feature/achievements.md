@@ -77,10 +77,6 @@ order: "999"
 
 ![Достижение "Шеф-повар"](../../assets/cheifcooker.png){width=50%}
 
-## Шеф-повар
-
-![Достижение "Шеф-повар"](../../assets/cheifcooker.png){width=50%}
-
 ## На ощупь
 
 ![Достижение "На ощупь"](../../assets/ontouch.png){width=50%}
