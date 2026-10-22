@@ -5,6 +5,7 @@ on:
     paths:
       - 'articles/**'
       - 'assets/**'
+      - 'nether-map.json'
       - 'scripts/**'
       - 'package.json'
       - 'package-lock.json'
@@ -15,6 +16,7 @@ on:
     paths:
       - 'articles/**'
       - 'assets/**'
+      - 'nether-map.json'
       - 'scripts/**'
       - 'package.json'
       - 'package-lock.json'
