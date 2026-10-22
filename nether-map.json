@@ -5,7 +5,7 @@
   "points": [
     { "id": "hub", "name": "Хаб", "kind": "hub", "x": 0, "y": 128, "z": 0 },
     { "id": "nalart11-base", "name": "База Nalart11_", "kind": "portal", "x": -158, "y": 128, "z": 90, "branchId": "west" },
-    { "id": "r4umsk-base", "name": "Ш.И.З.Р", "kind": "portal", "x": -220, "y": 129, "z": -128, "branchId": "north" }
+    { "id": "r4umsk-base", "name": "Ш.И.З.Р", "kind": "portal", "x": -220, "y": 128, "z": -128, "branchId": "north" }
   ],
   "branches": [
     { "id": "north", "name": "Северная", "direction": "north", "color": "#3b82f6" },
