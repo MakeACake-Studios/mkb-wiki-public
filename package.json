@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node scripts/validate.mjs"
+    "test": "node --test tests/wiki-image-comments.test.mjs && node scripts/validate.mjs"
   },
   "dependencies": {
     "remark-directive": "^4.0.0",

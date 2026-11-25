@@ -914,6 +914,25 @@ function blockNodes(nodes, context) {
       }
 
       case 'html':
+        // Authoring-only image briefs: never retain them in article data.
+        // Match the entire block so this cannot admit arbitrary HTML alongside it.
+        if (
+            /^<!-- WIKI-IMAGE\r?\nID: IMG-[A-Za-z0-9][A-Za-z0-9_-]*\r?\nTYPE: (?:screenshot|gui|item|recipe|comparison|diagram|sequence|gif)\r?\nDESCRIPTION: [^\r\n]*\S[^\r\n]*\r?\nPURPOSE: [^\r\n]*\S[^\r\n]*\r?\n-->$/.test(node.value) &&
+            !node.value.slice(4, -3).includes('<!--') &&
+            !node.value.slice(4, -3).includes('-->')
+        ) {
+          break
+        }
+
+        // Ordinary standalone comments can hide draft content, but malformed
+        // image briefs must not fall through to this more general allowance.
+        if (
+            !node.value.startsWith('<!-- WIKI-IMAGE') &&
+            /^<!--(?!>|->)(?:(?!-->|--!>|<!--)[\s\S])*(?<!<!-)-->$/.test(node.value)
+        ) {
+          break
+        }
+
         fail(
             context.filePath,
             node,
@@ -1044,6 +1063,14 @@ export function loadWikiContent(
                     frontmatterNode.value,
                 ) ?? {}
 
+            if (
+                metadata.hidden !== undefined &&
+                typeof metadata.hidden !== 'boolean'
+            ) {
+              fail(filePath, frontmatterNode, 'frontmatter hidden must be a boolean')
+            }
+            if (metadata.hidden === true) return null
+
             const slug =
                 normalizeSlugFromFile(
                     articlesDir,
@@ -1164,7 +1191,7 @@ export function loadWikiContent(
 
             return article
           },
-      )
+      ).filter(Boolean)
 
   const seenSlugs =
       new Set()
@@ -1209,6 +1236,8 @@ export function loadWikiContent(
           node.type ===
           'link' &&
           node.slug &&
+          // This standalone wiki route is not a Markdown article.
+          node.slug !== 'nether-roads' &&
           !seenSlugs.has(
               node.slug,
           )
